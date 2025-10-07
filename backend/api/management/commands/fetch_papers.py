@@ -1,102 +1,163 @@
 """
-
 For Development Only Na!!!
-
 """
+
 import requests
+import time
+from tqdm import tqdm
+from difflib import SequenceMatcher
 from django.core.management.base import BaseCommand
 from api.models import Paper
 
 
-class Command(BaseCommand):
-    # Explain Command
-    help = "Fetch papers from CrossRef (and enrich with Semantic Scholar) and save to DB"
+#def similar(a, b):
+#   """Calculate similarity between two strings (0.0–1.0)."""
+#  return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
-    # Add Argrument
+
+class Command(BaseCommand):
+    help = "Fetch papers automatically from CrossRef (and enrich with Semantic Scholar) and save to DB"
+
     def add_arguments(self, parser):
         parser.add_argument("--author", type=str, help="Author name to search")
+        parser.add_argument("--query", type=str, help="Keyword or topic to search")
         parser.add_argument("--start", type=int, help="Start year")
         parser.add_argument("--end", type=int, help="End year")
-        parser.add_argument("--rows", type=int, default=5, help="Number of results")
 
-    # Validation the Argument
     def handle(self, *args, **options):
         author = options.get("author")
+        query = options.get("query")
         start_year = options.get("start")
         end_year = options.get("end")
-        rows = options.get("rows")
 
-        if not author:
-            self.stdout.write(self.style.ERROR("Please provide --author"))
+        if not author and not query:
+            self.stdout.write(self.style.ERROR("Please provide --author or --query"))
             return
 
-        # Fetch Data From CrossRef
+        target_author = author.lower().strip() if author else None
         url = "https://api.crossref.org/works"
-        params = {
-            "query.author": author,
-            "rows": rows,
+        rows_per_page = 1000
+        offset = 0
+        total_fetched = 0
+
+        # Query setup
+        base_params = {
+            "rows": rows_per_page,
             "filter": f"from-pub-date:{start_year},until-pub-date:{end_year}"
                       if start_year and end_year else None,
         }
-        
-        # Clean the Argument
-        params = {k: v for k, v in params.items() if v is not None}
+        if author:
+            base_params["query.author"] = author
+            self.stdout.write(self.style.NOTICE(f"🔍 Searching by author: {author} ({start_year}-{end_year})"))
+        if query:
+            base_params["query"] = query
+            self.stdout.write(self.style.NOTICE(f"🔍 Searching by keyword: {query} ({start_year}-{end_year})"))
 
-        response = requests.get(url, params=params)
-        if response.status_code != 200:
-            self.stdout.write(self.style.ERROR("CrossRef API error"))
+        base_params = {k: v for k, v in base_params.items() if v is not None}
+
+        # First API call to get total
+        first_resp = requests.get(url, params={**base_params, "offset": 0})
+        if first_resp.status_code != 200:
+            self.stdout.write(self.style.ERROR(f"CrossRef API error ({first_resp.status_code})"))
             return
 
-        items = response.json().get("message", {}).get("items", [])
-        self.stdout.write(self.style.NOTICE(f"Found {len(items)} papers from CrossRef"))
+        total_results = first_resp.json().get("message", {}).get("total-results", 0)
+        if total_results == 0:
+            self.stdout.write(self.style.WARNING("No papers found."))
+            return
 
-        for item in items:
-            doi = item.get("DOI")
-            title = " ".join(item.get("title", []))
-            year = None
-            if "published-print" in item:
-                year = item["published-print"]["date-parts"][0][0]
-            elif "published-online" in item:
-                year = item["published-online"]["date-parts"][0][0]
+        self.stdout.write(self.style.NOTICE(f"📚 Total available papers: {total_results}"))
+        time.sleep(1)
 
-            authors = []
-            for a in item.get("author", []):
-                given = a.get("given", "")
-                family = a.get("family", "")
-                authors.append(f"{given} {family}".strip())
+        # Progress bar
+        with tqdm(total=total_results, desc="Fetching papers", unit="paper", dynamic_ncols=True) as pbar:
+            while True:
+                params = base_params.copy()
+                params["offset"] = offset
 
-            venue = item.get("container-title", [None])[0]
-            url_link = item.get("URL")
+                response = requests.get(url, params=params)
+                if response.status_code != 200:
+                    self.stdout.write(self.style.ERROR(f"CrossRef API error: {response.status_code}"))
+                    break
 
-            # Additional Data From Semantic Scholar
-            abstract, fields_of_study, citation_count = None, None, 0
-            if doi:
-                s2_url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}"
-                s2_params = {"fields": "title,abstract,fieldsOfStudy,citationCount"}
-                s2_resp = requests.get(s2_url, params=s2_params)
-                if s2_resp.status_code == 200:
-                    data = s2_resp.json()
-                    abstract = data.get("abstract")
-                    fields_of_study = ",".join(data.get("fieldsOfStudy", []) or [])
-                    citation_count = data.get("citationCount", 0)
+                data = response.json().get("message", {})
+                items = data.get("items", [])
+                if not items:
+                    break
 
-            # Save to DB
-            paper, created = Paper.objects.get_or_create(
-                doi=doi,
-                defaults={
-                    "title": title,
-                    "authors": ", ".join(authors),
-                    "year": year,
-                    "venue": venue,
-                    "url": url_link,
-                    "abstract": abstract,
-                    "fields_of_study": fields_of_study,
-                    "citation_count": citation_count,
-                },
-            )
+                for item in items:
+                    doi = item.get("DOI")
+                    title = " ".join(item.get("title", [])) or "(No Title)"
+                    year = None
+                    if "published-print" in item:
+                        year = item["published-print"]["date-parts"][0][0]
+                    elif "published-online" in item:
+                        year = item["published-online"]["date-parts"][0][0]
 
-            if created:
-                self.stdout.write(self.style.SUCCESS(f"Added: {title} ({year})"))
-            else:
-                self.stdout.write(self.style.WARNING(f"Skipped (already exists): {title}"))
+                    authors = []
+                    match_found = False
 
+                    for a in item.get("author", []):
+                        given = a.get("given", "")
+                        family = a.get("family", "")
+                        full_name = f"{given} {family}".strip()
+
+                        # author matching
+                        if target_author:
+                            if full_name.lower() == target_author:
+                                match_found = True
+                            """
+                            elif similar(full_name, target_author) >= 0.9:
+                                match_found = True
+                            """
+                            
+                        authors.append(full_name)
+
+                    # หากไม่มี match เลย ข้าม
+                    if target_author and not match_found:
+                        pbar.update(1)
+                        continue
+
+                    venue = item.get("container-title", [None])[0]
+                    url_link = item.get("URL")
+
+                    pbar.set_postfix_str(f"Now: {title[:60]}...", refresh=True)
+
+                    # Semantic Scholar enrichment
+                    abstract, fields_of_study, citation_count = None, None, 0
+                    if doi:
+                        s2_url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}"
+                        s2_params = {"fields": "title,abstract,fieldsOfStudy,citationCount"}
+                        s2_resp = requests.get(s2_url, params=s2_params)
+                        if s2_resp.status_code == 200:
+                            s2_data = s2_resp.json()
+                            abstract = s2_data.get("abstract")
+                            fields_of_study = ",".join(s2_data.get("fieldsOfStudy", []) or [])
+                            citation_count = s2_data.get("citationCount", 0)
+
+                    # Save to DB
+                    Paper.objects.get_or_create(
+                        doi=doi,
+                        defaults={
+                            "title": title,
+                            "authors": ", ".join(authors),
+                            "year": year,
+                            "venue": venue,
+                            "url": url_link,
+                            "abstract": abstract,
+                            "fields_of_study": fields_of_study,
+                            "citation_count": citation_count,
+                        },
+                    )
+
+                    pbar.update(1)
+
+                offset += rows_per_page
+                total_fetched += len(items)
+
+                if offset >= total_results:
+                    break
+
+                time.sleep(1)
+
+        self.stdout.write(self.style.SUCCESS(f"\n✅ Total papers fetched and saved: {total_fetched}"))
