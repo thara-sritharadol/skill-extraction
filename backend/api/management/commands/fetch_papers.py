@@ -38,7 +38,7 @@ class Command(BaseCommand):
         url = "https://api.crossref.org/works"
         rows_per_page = 1000
         offset = 0
-        total_fetched = 0
+        saved_count = 0
 
         # Query setup
         base_params = {
@@ -106,6 +106,7 @@ class Command(BaseCommand):
                         if target_author:
                             if full_name.lower() == target_author:
                                 match_found = True
+                                
                             """
                             elif similar(full_name, target_author) >= 0.9:
                                 match_found = True
@@ -136,7 +137,7 @@ class Command(BaseCommand):
                             citation_count = s2_data.get("citationCount", 0)
 
                     # Save to DB
-                    Paper.objects.get_or_create(
+                    paper, created = Paper.objects.get_or_create(
                         doi=doi,
                         defaults={
                             "title": title,
@@ -149,15 +150,17 @@ class Command(BaseCommand):
                             "citation_count": citation_count,
                         },
                     )
+                    
+                    if created:
+                        saved_count += 1
 
                     pbar.update(1)
 
                 offset += rows_per_page
-                total_fetched += len(items)
 
                 if offset >= total_results:
                     break
 
                 time.sleep(1)
 
-        self.stdout.write(self.style.SUCCESS(f"\n✅ Total papers fetched and saved: {total_fetched}"))
+        self.stdout.write(self.style.SUCCESS(f"\n✅ Total papers saved to DB: {saved_count}"))
