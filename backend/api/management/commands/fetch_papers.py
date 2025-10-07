@@ -1,17 +1,25 @@
+"""
+
+For Development Only Na!!!
+
+"""
 import requests
 from django.core.management.base import BaseCommand
 from api.models import Paper
 
 
 class Command(BaseCommand):
+    # Explain Command
     help = "Fetch papers from CrossRef (and enrich with Semantic Scholar) and save to DB"
 
+    # Add Argrument
     def add_arguments(self, parser):
         parser.add_argument("--author", type=str, help="Author name to search")
         parser.add_argument("--start", type=int, help="Start year")
         parser.add_argument("--end", type=int, help="End year")
         parser.add_argument("--rows", type=int, default=5, help="Number of results")
 
+    # Validation the Argument
     def handle(self, *args, **options):
         author = options.get("author")
         start_year = options.get("start")
@@ -30,7 +38,9 @@ class Command(BaseCommand):
             "filter": f"from-pub-date:{start_year},until-pub-date:{end_year}"
                       if start_year and end_year else None,
         }
-        params = {k: v for k, v in params.items() if v is not None}  # Delete None
+        
+        # Clean the Argument
+        params = {k: v for k, v in params.items() if v is not None}
 
         response = requests.get(url, params=params)
         if response.status_code != 200:
