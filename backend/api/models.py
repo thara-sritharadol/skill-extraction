@@ -11,7 +11,18 @@ class Paper(models.Model):
     citation_count = models.IntegerField(default=0)
     url = models.URLField(null=True, blank=True)
     
+    # When print pr see it in Django admin
     def __str__(self):
-        return f"{self.title} ({self.year})"
+        return f"({self.id}) {self.title} ({self.year})"
 
-    
+class ExtractedSkill(models.Model):
+    paper = models.ForeignKey('Paper', on_delete=models.CASCADE, related_name='extracted_skills')
+    author_name = models.CharField(max_length=255, null=True, blank=True)
+    skill_name = models.CharField(max_length=255)
+    skill_uri = models.URLField(null=True, blank=True)  # ลิงก์จาก ESCO ถ้ามี
+    confidence = models.FloatField(default=0.0)  # ค่า similarity ระหว่าง abstract กับ skill
+    embedding_model = models.CharField(max_length=255, default="SBERT-all-mpnet-base-v2")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.skill_name} ({self.confidence:.2f}) - {self.author_name or 'Unknown'}"
